@@ -1,11 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { VertexAI } = require('@google-cloud/vertexai');
 const { CHARACTERS } = require('./characters');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const vertexAI = new VertexAI({
+  project: process.env.GOOGLE_CLOUD_PROJECT,
+  location: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
+});
 
-// Simple in-memory history (replace with Firestore later)
+// Simple in-memory history
 const chatHistories = {};
 
 router.post('/', async (req, res) => {
@@ -19,25 +22,25 @@ router.post('/', async (req, res) => {
   if (!character) return res.status(404).json({ error: 'Personaje no encontrado' });
 
   try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: character.personality,
-    });
-
-    // Get or create chat history
-    const historyKey = `${userId}_${characterId}`;
-    if (!chatHistories[historyKey]) chatHistories[historyKey] = [];
-
-    const chat = model.startChat({
-      history: chatHistories[historyKey],
+    const model = vertexAI.getGenerativeModel({
+      model: 'gemini-2.0-flash-001',
+      systemInstruction: { parts: [{ text: character.personality }] },
       generationConfig: {
         maxOutputTokens: 256,
         temperature: 0.9,
       },
     });
 
-    const result = await chat.sendMessage(message);
-    const response = result.response.text();
+    const historyKey = `${userId}_${characterId}`;
+    if (!chatHistories[historyKey]) chatHistories[historyKey] = [];
+
+    const contents = [
+      ...chatHistories[historyKey],
+      { role: 'user', parts: [{ text: message }] }
+    ];
+
+    const result = await model.generateContent({ contents });
+    const response = result.response.candidates[0].content.parts[0].text;
 
     // Save to history
     chatHistories[historyKey].push(
@@ -45,7 +48,7 @@ router.post('/', async (req, res) => {
       { role: 'model', parts: [{ text: response }] }
     );
 
-    // Keep only last 20 messages
+    // Keep last 20 messages
     if (chatHistories[historyKey].length > 20) {
       chatHistories[historyKey] = chatHistories[historyKey].slice(-20);
     }
@@ -53,7 +56,7 @@ router.post('/', async (req, res) => {
     res.json({ response, characterId, userId });
 
   } catch (err) {
-    console.error('Error Gemini:', err.message);
+    console.error('Error Vertex AI:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
